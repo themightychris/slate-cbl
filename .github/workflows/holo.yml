@@ -2,14 +2,22 @@ name: Projections
 
 on:
   push:
-    tags:
-      - 'v3.*'
+    branches: [develop]
 
 
 jobs:
   holobranch-projections:
     runs-on: ubuntu-latest
     steps:
+    - name: Initialize Chef Habitat artifacts cache directory
+      run: |
+        sudo mkdir -p /hab/cache/artifacts
+        sudo chown runner:docker -R /hab
+    - name: Cache Chef Habitat artifacts
+      uses: actions/cache@v1
+      with:
+        path: /hab/cache/artifacts
+        key: hab-cache-artifacts
     - name: 'Update holobranch: emergence/skeleton/v3'
       uses: JarvusInnovations/hologit@actions/projector/v1
       env:
@@ -28,22 +36,66 @@ jobs:
         ref: releases/v3
         holobranch: emergence-vfs-site
         commit-to: emergence/vfs-site/v3
-    - name: 'Update v3.cbl.slate.is'
+    - name: 'Stop default mysql service'
+      run: sudo service mysql stop
+    - name: 'Initialize Chef Habitat environment'
+      uses: JarvusInnovations/habitat-action@master
       env:
-        VFS_DEV_TOKEN: ${{ secrets.VFS_DEV_TOKEN }}
+        HAB_LICENSE: accept
+        HAB_NGINX: |
+          [http.listen]
+          port = 7080
+        HAB_MYSQL: |
+          app_username = 'appadmin'
+          app_password = 'appadmin'
+          bind = '0.0.0.0'
+        HAB_PHP_RUNTIME: |
+          [sites.default.holo]
+          gitDir = '${{ github.workspace }}'
+      with:
+        # deps: |
+        #   core/git
+        #   core/hab-studio
+        supervisor: |
+          core/mysql
+          emergence/php-runtime --bind="database:mysql.default"
+          emergence/nginx --bind="backend:php-runtime.default"
+    - name: Load site projection into emergence runtime
       run: |
-        # pull latest commit
-        curl -X POST \
-          --silent \
-          -H "Authorization: Token ${VFS_DEV_TOKEN}" \
-          -H "Accept: application/json" \
-          "http://v3.cbl.slate.is/site-admin/sources/slate-cbl/pull?fetch=true" \
-          | jq '.'
+        until sudo test -f /hab/svc/php-runtime/config/fpm-exec ]; do sleep .1; done
+        sudo hab pkg exec emergence/php-runtime emergence-php-load $(git rev-parse emergence/vfs-site/v3)
+    - name: Set up Cypress workspace
+      env:
+        GIT_DIR: '${{ github.workspace }}'
+        GIT_WORK_TREE: '${{ github.workspace }}.cypress-workspace'
+        GIT_INDEX_FILE: '${{ github.workspace }}.cypress-workspace.index'
+      run: |
+        mkdir "${GIT_WORK_TREE}"
+        cd "${GIT_WORK_TREE}"
+        git checkout releases/v3 -- \
+          package.json \
+          package-lock.json \
+          cypress.json \
+          cypress
+        npm install
+    - name: Setup tmate session
+      uses: mxschmitt/action-tmate@v1
+    # - name: 'Update v3.cbl.slate.is'
+    #   env:
+    #     VFS_DEV_TOKEN: ${{ secrets.VFS_DEV_TOKEN }}
+    #   run: |
+    #     # pull latest commit
+    #     curl -X POST \
+    #       --silent \
+    #       -H "Authorization: Token ${VFS_DEV_TOKEN}" \
+    #       -H "Accept: application/json" \
+    #       "http://v3.cbl.slate.is/site-admin/sources/slate-cbl/pull?fetch=true" \
+    #       | jq '.'
 
-        # sync VFS to git
-        curl -X POST \
-          --silent \
-          -H "Authorization: Token ${VFS_DEV_TOKEN}" \
-          -H "Accept: application/json" \
-          "http://v3.cbl.slate.is/site-admin/sources/slate-cbl/sync-to-vfs" \
-          | jq '.'
+    #     # sync VFS to git
+    #     curl -X POST \
+    #       --silent \
+    #       -H "Authorization: Token ${VFS_DEV_TOKEN}" \
+    #       -H "Accept: application/json" \
+    #       "http://v3.cbl.slate.is/site-admin/sources/slate-cbl/sync-to-vfs" \
+    #       | jq '.'
