@@ -1,0 +1,56 @@
+name: 'Release: Prepare PR'
+
+on:
+  push:
+    branches: [develop]
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  RELEASE_BRANCH: releases/v3
+
+jobs:
+  prepare-release:
+
+    runs-on: ubuntu-latest
+    steps:
+
+    - uses: actions/checkout@v2
+      with:
+        fetch-depth: 0
+
+    - uses: mxschmitt/action-tmate@v3
+
+    - name: Create/update pull request
+      run: |
+        set -e
+
+        # get latest release tag
+        latest_release=$(git describe --tags --abbrev=0 origin/${{ env.RELEASE_BRANCH }})
+        latest_release_bumped=$(echo $latest_release | awk -F. -v OFS=. '{$NF++;print}')
+
+        pr_body="$(cat <<EOF
+        Release: ${latest_release_bumped}
+
+        $(git log \
+          --first-parent \
+          --reverse \
+          --pretty=format:"- %s (%ae)%n" \
+          "origin/${RELEASE_BRANCH}..develop"
+        )
+
+        ## Improvements:
+
+        ## Technical:
+
+        EOF
+        )"
+
+        # check for existing PR
+        _existing_pr_number=$(hub pr list -h develop -f '%I')
+        if [ -n "${_existing_pr_number}" ]; then
+          echo "Updating PR #${_existing_pr_number}"
+          hub issue update "${_existing_pr_number}" -F <(echo "${pr_body}")
+        else
+          echo "Opening PR"
+          hub pull-request -b releases/v1 -h develop -F <(echo "${pr_body}") > /tmp/pr.json
+        fi
